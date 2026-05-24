@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ROUTECTRL — Análisis de Rutas para Transporte</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="header">
+  <div class="logo">
+    ROUTE<span class="accent">CTRL</span>
+    <span class="sub">Análisis de Rutas Transp. Especial</span>
+  </div>
+  <div class="header-status">
+    <div class="status-item">
+      <span class="status-label">Vehículo</span>
+      <span class="status-value" id="status-vehicle">—</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">Carga</span>
+      <span class="status-value" id="status-load">—</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">Ruta</span>
+      <span class="status-value" id="status-state">SIN RUTA</span>
+    </div>
+  </div>
+</header>
+
+<aside class="sidebar">
+  <div class="tabs">
+    <div class="tab active" data-tab="points">Puntos</div>
+    <div class="tab" data-tab="import">Importar</div>
+    <div class="tab" data-tab="vehicle">Vehíc.</div>
+    <div class="tab" data-tab="load">Carga</div>
+    <div class="tab" data-tab="hazards">Riesgos</div>
+    <div class="tab" data-tab="route">Ruta</div>
+  </div>
+
+  <!-- TAB: PUNTOS (orígenes / referencias) -->
+  <div class="tab-content active" data-tab="points">
+    <div class="helper-text">
+      Marca <b>orígenes</b> o puntos de referencia.
+      El <b>destino</b> de la ruta se importa desde KML/KMZ
+      en la pestaña «Importar».
+    </div>
+    <button class="primary full" id="btn-add-poi">+ Añadir punto en el mapa</button>
+    <button class="ghost full" id="btn-set-origin-map" style="margin-top:6px">📍 Origen rápido con clic en mapa</button>
+    <div class="section-title">Puntos guardados</div>
+    <div class="list" id="poi-list"></div>
+  </div>
+
+  <!-- TAB: IMPORTAR -->
+  <div class="tab-content" data-tab="import">
+    <div class="helper-text">
+      Importa <b>destinos</b> (Placemarks con coordenadas) y
+      <b>superposiciones</b> gráficas (GroundOverlay) desde archivos
+      .kml o .kmz (Google Earth, Google My Maps, etc.).
+    </div>
+    <button class="primary full" id="btn-import-kml">📁 Importar KML / KMZ</button>
+    <input type="file" id="file-kml" accept=".kml,.kmz" style="display:none">
+
+    <div id="destinations-summary" style="display:none">
+      <div class="section-title">Destinos <span style="color:var(--accent)">(<span id="destinations-count">0</span>)</span></div>
+      <div class="list" id="destination-list"></div>
+    </div>
+
+    <div id="overlays-summary" style="display:none">
+      <div class="section-title">Superposiciones <span style="color:var(--accent)">(<span id="overlays-count">0</span>)</span></div>
+      <div class="list" id="overlay-list"></div>
+      <div class="field" style="margin-top:8px">
+        <label class="field-label">Opacidad de superposiciones</label>
+        <input type="range" id="overlay-opacity" min="0" max="100" value="70">
+      </div>
+    </div>
+
+    <button class="ghost full" id="btn-clear-imports" style="display:none;margin-top:14px">Borrar destinos y superposiciones</button>
+  </div>
+
+  <!-- TAB: VEHICULO -->
+  <div class="tab-content" data-tab="vehicle">
+    <div class="field">
+      <label class="field-label">Catálogo</label>
+      <select id="vehicle-select"></select>
+    </div>
+    <div class="section-title">Dimensiones</div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Longitud (m)</label>
+        <input type="number" step="0.1" data-vehicle-field="length"></div>
+      <div class="field"><label class="field-label">Anchura (m)</label>
+        <input type="number" step="0.05" data-vehicle-field="width"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Altura (m)</label>
+        <input type="number" step="0.05" data-vehicle-field="height"></div>
+      <div class="field"><label class="field-label">Peso vacío (kg)</label>
+        <input type="number" step="100" data-vehicle-field="weight"></div>
+    </div>
+    <div class="section-title">Maniobrabilidad</div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Radio giro mín (m)</label>
+        <input type="number" step="0.5" data-vehicle-field="turning_radius"></div>
+      <div class="field"><label class="field-label">Ancho plat. mín (m)</label>
+        <input type="number" step="0.1" data-vehicle-field="min_road_width"></div>
+    </div>
+    <div class="field">
+      <label class="field-label">Pendiente máx (%)</label>
+      <input type="number" step="1" data-vehicle-field="max_grade">
+    </div>
+  </div>
+
+  <!-- TAB: CARGA -->
+  <div class="tab-content" data-tab="load">
+    <div class="helper-text">
+      Define dimensiones y peso de la carga; el sistema te sugerirá
+      el vehículo apropiado del catálogo.
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Longitud (m)</label>
+        <input type="number" step="0.1" data-load-field="length"></div>
+      <div class="field"><label class="field-label">Anchura (m)</label>
+        <input type="number" step="0.05" data-load-field="width"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Altura (m)</label>
+        <input type="number" step="0.05" data-load-field="height"></div>
+      <div class="field"><label class="field-label">Peso (kg)</label>
+        <input type="number" step="100" data-load-field="weight"></div>
+    </div>
+    <div class="field">
+      <label class="field-label">Tipo</label>
+      <select data-load-field="type">
+        <option value="standard">Estándar (divisible)</option>
+        <option value="indivisible">Indivisible</option>
+        <option value="dangerous">Mercancía peligrosa (ADR)</option>
+        <option value="machinery">Maquinaria</option>
+      </select>
+    </div>
+    <button class="primary full" id="btn-auto-vehicle">⚙ Sugerir vehículo</button>
+  </div>
+
+  <!-- TAB: RIESGOS -->
+  <div class="tab-content" data-tab="hazards">
+    <div class="helper-text">
+      Marca riesgos conocidos del terreno: gálibos bajos, puentes débiles,
+      estrechamientos… El análisis los cruzará con la ruta.
+    </div>
+    <div class="section-title">Añadir riesgo</div>
+    <div class="hazard-grid" id="hazard-type-grid"></div>
+    <div class="section-title">Riesgos marcados</div>
+    <div class="list" id="hazard-list"></div>
+  </div>
+
+  <!-- TAB: RUTA -->
+  <div class="tab-content" data-tab="route">
+    <div class="field">
+      <label class="field-label">Origen</label>
+      <select id="select-origin"></select>
+    </div>
+    <div class="field">
+      <label class="field-label">Destino (solo desde KML/KMZ)</label>
+      <select id="select-destination"></select>
+    </div>
+    <button class="primary full" id="btn-calculate-route">▶ Calcular y analizar ruta</button>
+    <button class="ghost full" id="btn-replay-tour" style="margin-top:8px" disabled>🚛 Tour de simulación</button>
+    <button class="ghost full" id="btn-streetview" style="margin-top:8px" disabled>👁 Recorrido Street View / suelo</button>
+    <button class="ghost full" id="btn-earth-tour" style="margin-top:8px" disabled>🌍 Recorrido 3D (Google Earth)</button>
+    <button class="ghost full" id="btn-map-keys" style="margin-top:8px">🔑 Mapas Bing / Tráfico</button>
+    <button class="ghost full" id="btn-clear-route" style="margin-top:8px">Borrar ruta</button>
+
+    <div class="section-title">Leyenda</div>
+    <div class="legend">
+      <div><span class="lgd lgd-motorway"></span>Autopista/autovía</div>
+      <div><span class="lgd lgd-primary"></span>Carretera principal</div>
+      <div><span class="lgd lgd-secondary"></span>Carretera secundaria</div>
+      <div><span class="lgd lgd-residential"></span>Calle/local</div>
+      <div><span class="lgd lgd-track"></span>Pista/camino agrícola</div>
+      <div><span class="lgd lgd-path"></span>Senda</div>
+    </div>
+  </div>
+</aside>
+
+<main id="map"></main>
+
+<section class="bottom-panel" id="analysis-panel">
+  <div class="bottom-header">
+    <div class="bottom-title">Análisis de ruta</div>
+    <div class="bottom-stats">
+      <div class="bottom-stat"><span class="label">Distancia</span><span class="value" id="stat-distance">—</span></div>
+      <div class="bottom-stat"><span class="label">Tiempo est.</span><span class="value" id="stat-time">—</span></div>
+      <div class="bottom-stat"><span class="label">Tramos</span><span class="value" id="stat-segments">—</span></div>
+      <div class="bottom-stat"><span class="label">Alertas</span><span class="value" id="stat-warnings">—</span></div>
+    </div>
+    <button class="icon ghost" id="btn-close-analysis" title="Cerrar">▼</button>
+  </div>
+  <div class="bottom-content">
+    <div id="col-warnings"></div>
+    <div id="col-regulatory"></div>
+    <div id="col-resources"></div>
+  </div>
+</section>
+
+<div id="loading-overlay">
+  <div class="loading-inner">
+    <div class="loading-spinner"></div>
+    <div class="loading-text" id="loading-text">Cargando…</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-imageoverlay-rotated@0.2.1/Leaflet.ImageOverlay.Rotated.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
