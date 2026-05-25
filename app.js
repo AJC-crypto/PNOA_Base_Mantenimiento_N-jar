@@ -133,6 +133,7 @@ async function init() {
     setLoading('Inicializando mapa…');
     await new Promise(r => setTimeout(r, 10));
     initMap();
+    ensureRotatedPlugin();   // carga el plugin de superposiciones giradas (no bloquea)
     initTabs();
     initPOIsTab();
     initVehicleTab();
@@ -147,6 +148,34 @@ async function init() {
     console.error(e);
     setLoading('ERROR: ' + e.message);
   }
+}
+
+// Carga el plugin Leaflet.ImageOverlay.Rotated desde CDN (igual que JSZip).
+// Sin él, una superposición girada o con 4 esquinas (gx:LatLonQuad) se pinta
+// dentro de su caja recta → sale más grande y descolocada. Al terminar la
+// carga, re-dibuja las superposiciones ya existentes para corregirlas.
+let _rotatedPluginTried = false;
+function ensureRotatedPlugin() {
+  if (_rotatedPluginTried) return;
+  _rotatedPluginTried = true;
+  if (window.L && L.imageOverlay && L.imageOverlay.rotated) return;  // ya está
+  const urls = [
+    'Leaflet.ImageOverlay.Rotated.js',   // copia local en el repo (funciona offline)
+    'https://cdn.jsdelivr.net/npm/leaflet-imageoverlay-rotated@0.2.1/Leaflet.ImageOverlay.Rotated.js',
+    'https://unpkg.com/leaflet-imageoverlay-rotated@0.2.1/Leaflet.ImageOverlay.Rotated.js',
+  ];
+  const tryLoad = (i) => {
+    if (i >= urls.length) {
+      console.warn('No se pudo cargar el plugin de rotación; las superposiciones giradas se verán en caja recta.');
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = urls[i];
+    s.onload = () => { try { if (typeof renderOverlays === 'function') renderOverlays(); } catch(_){} };
+    s.onerror = () => tryLoad(i + 1);
+    document.head.appendChild(s);
+  };
+  tryLoad(0);
 }
 
 function setLoading(txt) {
@@ -265,12 +294,29 @@ function initMap() {
 
   S.map.on('click', onMapClick);
 
-  // Límite: la zona ensamblada (PNOA) es el borde. No se puede alejar ni
-  // desplazar más allá de ese rectángulo.
-  const lim = L.latLngBounds(bounds).pad(0.05);
-  S.map.setMaxBounds(lim);
-  S.map.setMinZoom(S.map.getBoundsZoom(lim));   // al alejar, encaja la zona
-  S.map.on('drag', () => S.map.panInsideBounds(lim, { animate: false }));
+  // ---- Fondo SIEMPRE visible por debajo del PNOA local ----
+  // Dos paneles bajo el tilePane (zIndex 200) para que, al salir de la zona
+  // ensamblada o al alejar/ampliar, NUNCA quede el mapa en blanco.
+  S.map.createPane('fondo-mundo');  S.map.getPane('fondo-mundo').style.zIndex = 140;
+  S.map.createPane('fondo-espana'); S.map.getPane('fondo-espana').style.zIndex = 150;
+  // Mundo entero: permite alejarse todo lo que se quiera.
+  L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { pane:'fondo-mundo', maxZoom: 20, attribution:'Esri World Imagery', interactive:false }
+  ).addTo(S.map);
+  // PNOA nacional del IGN (toda España), por encima del fondo mundial.
+  L.tileLayer(
+    'https://www.ign.es/wmts/pnoa-ma?service=WMTS&request=GetTile&version=1.0.0&layer=OI.OrthoimageCoverage&style=default&tilematrixset=GoogleMapsCompatible&format=image/jpeg&tilematrix={z}&tilerow={y}&tilecol={x}',
+    { pane:'fondo-espana', maxZoom: 20, attribution:'PNOA — IGN', interactive:false }
+  ).addTo(S.map);
+
+  // ---- Navegación libre ----
+  // Antes el mapa estaba "encerrado" en el rectángulo del PNOA local
+  // (setMaxBounds + setMinZoom + panInsideBounds). Eso impedía alejarse y
+  // hacía que el zoom fuese a tirones. Ahora se puede ir tan lejos como
+  // se quiera; el fondo de arriba garantiza que siempre se vea algo.
+  S.map.setMinZoom(5);    // alejar hasta ver toda la península
+  S.map.setMaxZoom(20);
 }
 
 // ===== Proveedores con clave (Bing, tráfico TomTom) =====
