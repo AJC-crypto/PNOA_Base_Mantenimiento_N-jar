@@ -86,7 +86,7 @@ const S = {
   overlayLayer: null, routeLayer: null, warningLayer: null,
   graph: null, config: null, geojson: null,
   mapMode: 'normal', hazardTypeBeingAdded: null,
-  overlayOpacity: 0.7,
+  overlayOpacity: 0.7, adjustOverlayId: null,
 };
 
 // ============================================================
@@ -920,6 +920,9 @@ function parseKMLContent(text, images, sourceName) {
                    cLng + (dx * cosr - dy * sinr) / kx ];
         };
         corners = { tl: rot(n, w), tr: rot(n, e), bl: rot(s, w) };
+      } else {
+        // Sin giro: esquinas rectas (permite ajustarla luego igualmente)
+        corners = { tl: [n, w], tr: [n, e], bl: [s, w] };
       }
     }
 
@@ -1006,16 +1009,30 @@ function renderDestinations() {
       const sel = S.destination === d.id;
       return `<div class="list-item dest-import ${sel ? 'selected' : ''}" data-id="${d.id}">
         <div class="dot" style="background:var(--critical)"></div>
-        <div class="name">${esc(d.name)}${sel ? '<span class="sub">DESTINO ACTIVO</span>' : (d.source ? '<span class="sub">'+esc(d.source)+'</span>' : '')}</div>
+        <div class="name" data-act="dest-sel" data-id="${d.id}">${esc(d.name)}${sel ? '<span class="sub">DESTINO ACTIVO</span>' : (d.source ? '<span class="sub">'+esc(d.source)+'</span>' : '')}</div>
+        <button class="icon ghost" title="Borrar destino" data-act="dest-del" data-id="${d.id}">×</button>
       </div>`;
     }).join('');
-    list.querySelectorAll('.list-item').forEach(it => {
-      it.addEventListener('click', () => {
-        const d = S.destinations.find(x => x.id === it.dataset.id);
+    list.querySelectorAll('[data-act="dest-sel"]').forEach(el => {
+      el.addEventListener('click', () => {
+        const d = S.destinations.find(x => x.id === el.dataset.id);
         if (!d) return;
         S.destination = d.id;
         renderDestinations();
         S.map.panTo([d.lat, d.lng]);
+        saveState();
+      });
+    });
+    list.querySelectorAll('[data-act="dest-del"]').forEach(b => {
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        const id = b.dataset.id;
+        const d = S.destinations.find(x => x.id === id);
+        if (!confirm('¿Borrar el destino "' + (d ? d.name : '') + '"?')) return;
+        S.destinations = S.destinations.filter(x => x.id !== id);
+        if (S.destination === id) S.destination = null;
+        renderDestinations();
+        updateRouteSelects();
         saveState();
       });
     });
@@ -1026,13 +1043,21 @@ function renderDestinations() {
   updateRouteSelects();
 }
 
+function cornersFromBounds(b) {
+  // b = [[s,w],[n,e]] → {tl,[n,w], tr:[n,e], bl:[s,w]}
+  const s = b[0][0], w = b[0][1], n = b[1][0], e = b[1][1];
+  return { tl: [n, w], tr: [n, e], bl: [s, w] };
+}
+
 function renderOverlays() {
   S.overlayLayer.clearLayers();
   for (const o of S.overlays) {
+    o._layer = null;
     if (o.visible === false) continue;
+    if (!o.corners && o.bounds) o.corners = cornersFromBounds(o.bounds);
     try {
       if (o.tiled) {
-        L.tileLayer(o.tilesDir + '/{z}/{x}/{y}.png', {
+        o._layer = L.tileLayer(o.tilesDir + '/{z}/{x}/{y}.png', {
           minZoom: o.minZoom || 11,
           maxZoom: (o.maxZoom || 17) + 3,
           minNativeZoom: o.minZoom || 11,
@@ -1041,22 +1066,22 @@ function renderOverlays() {
           opacity: S.overlayOpacity,
           tms: false,
           interactive: false,
-        }).addTo(S.overlayLayer);
+        });
       } else if (o.corners && L.imageOverlay.rotated) {
-        // Giro o LatLonQuad: colocar con las 3 esquinas (corrige el desplazamiento)
         const c = o.corners;
-        L.imageOverlay.rotated(
+        o._layer = L.imageOverlay.rotated(
           o.imageUrl,
           L.latLng(c.tl[0], c.tl[1]),
           L.latLng(c.tr[0], c.tr[1]),
           L.latLng(c.bl[0], c.bl[1]),
           { opacity: S.overlayOpacity, interactive: false }
-        ).addTo(S.overlayLayer);
+        );
       } else {
-        L.imageOverlay(o.imageUrl, o.bounds, {
+        o._layer = L.imageOverlay(o.imageUrl, o.bounds, {
           opacity: S.overlayOpacity, interactive: false,
-        }).addTo(S.overlayLayer);
+        });
       }
+      if (o._layer) o._layer.addTo(S.overlayLayer);
     } catch (e) { console.warn('No se pudo cargar overlay', o.name, e); }
   }
 
@@ -1065,21 +1090,134 @@ function renderOverlays() {
   if (S.overlays.length) {
     summary.style.display = '';
     document.getElementById('overlays-count').textContent = S.overlays.length;
-    list.innerHTML = S.overlays.map(o => `
-      <div class="list-item" data-id="${o.id}">
+    list.innerHTML = S.overlays.map(o => {
+      const adj = (S.adjustOverlayId === o.id);
+      return `<div class="list-item ovl-item ${adj ? 'selected' : ''}" data-id="${o.id}">
         <div class="dot" style="background:var(--accent);border-radius:2px"></div>
-        <div class="name">${esc(o.name)}${o.source ? '<span class="sub">'+esc(o.source)+'</span>' : ''}</div>
-      </div>`).join('');
-    list.querySelectorAll('.list-item').forEach(it => {
-      it.addEventListener('click', () => {
-        const o = S.overlays.find(x => x.id === it.dataset.id);
-        if (o) S.map.flyToBounds(o.bounds, { duration: 0.6 });
-      });
-    });
+        <div class="name" data-act="ovl-zoom" data-id="${o.id}">${esc(o.name)}${o.source ? '<span class="sub">'+esc(o.source)+'</span>' : ''}</div>
+        <button class="icon ghost" title="Ajustar posición" data-act="ovl-adjust" data-id="${o.id}">✥</button>
+        <button class="icon ghost" title="Borrar" data-act="ovl-del" data-id="${o.id}">×</button>
+      </div>
+      ${adj ? `<div class="ovl-adjust-panel" data-id="${o.id}" style="display:flex;flex-wrap:wrap;gap:4px;padding:6px 8px;background:rgba(255,255,255,.04);border-radius:6px;margin:2px 0 6px">
+        <span style="width:100%;font-size:10px;opacity:.6;letter-spacing:.5px">MOVER</span>
+        <button class="icon ghost" data-act="ovl-move" data-dir="up"    data-id="${o.id}">↑</button>
+        <button class="icon ghost" data-act="ovl-move" data-dir="down"  data-id="${o.id}">↓</button>
+        <button class="icon ghost" data-act="ovl-move" data-dir="left"  data-id="${o.id}">←</button>
+        <button class="icon ghost" data-act="ovl-move" data-dir="right" data-id="${o.id}">→</button>
+        <span style="width:100%;font-size:10px;opacity:.6;letter-spacing:.5px;margin-top:4px">GIRAR / TAMAÑO</span>
+        <button class="icon ghost" data-act="ovl-rot" data-d="-1" data-id="${o.id}">⟲</button>
+        <button class="icon ghost" data-act="ovl-rot" data-d="1"  data-id="${o.id}">⟳</button>
+        <button class="icon ghost" data-act="ovl-scale" data-d="0.98" data-id="${o.id}">−</button>
+        <button class="icon ghost" data-act="ovl-scale" data-d="1.02" data-id="${o.id}">+</button>
+        <span style="width:100%;font-size:10px;opacity:.5;margin-top:4px">Mantén pulsado para mover rápido. Pulsa ✥ otra vez para terminar.</span>
+      </div>` : ''}`;
+    }).join('');
+
+    list.querySelectorAll('[data-act="ovl-zoom"]').forEach(el =>
+      el.addEventListener('click', () => {
+        const o = S.overlays.find(x => x.id === el.dataset.id);
+        if (o && o.bounds) S.map.flyToBounds(o.bounds, { duration: 0.6 });
+      }));
+    list.querySelectorAll('[data-act="ovl-adjust"]').forEach(b =>
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        S.adjustOverlayId = (S.adjustOverlayId === b.dataset.id) ? null : b.dataset.id;
+        renderOverlays();
+      }));
+    list.querySelectorAll('[data-act="ovl-del"]').forEach(b =>
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        deleteOverlay(b.dataset.id);
+      }));
+    list.querySelectorAll('[data-act="ovl-move"]').forEach(b =>
+      b.addEventListener('click', e => { e.stopPropagation(); moveOverlay(b.dataset.id, b.dataset.dir); }));
+    list.querySelectorAll('[data-act="ovl-rot"]').forEach(b =>
+      b.addEventListener('click', e => { e.stopPropagation(); rotateOverlay(b.dataset.id, parseFloat(b.dataset.d)); }));
+    list.querySelectorAll('[data-act="ovl-scale"]').forEach(b =>
+      b.addEventListener('click', e => { e.stopPropagation(); scaleOverlay(b.dataset.id, parseFloat(b.dataset.d)); }));
   } else {
     summary.style.display = 'none';
   }
   updateClearImportsButton();
+}
+
+// ---- Ajuste manual de superposiciones ----
+function _ovlApply(o) {
+  if (!o._layer) { renderOverlays(); return; }
+  const c = o.corners;
+  if (o._layer.reposition && c) {
+    o._layer.reposition(
+      L.latLng(c.tl[0], c.tl[1]),
+      L.latLng(c.tr[0], c.tr[1]),
+      L.latLng(c.bl[0], c.bl[1]));
+  } else {
+    renderOverlays();
+  }
+}
+function _ovlSpan(o) {
+  const c = o.corners;
+  const dLat = Math.abs(c.tl[0] - c.bl[0]) || 0.001;
+  const dLng = Math.abs(c.tr[1] - c.tl[1]) || 0.001;
+  return { dLat, dLng };
+}
+function moveOverlay(id, dir) {
+  const o = S.overlays.find(x => x.id === id);
+  if (!o || !o.corners) return;
+  const { dLat, dLng } = _ovlSpan(o);
+  const stepLat = dLat * 0.04, stepLng = dLng * 0.04;
+  let aLat = 0, aLng = 0;
+  if (dir === 'up') aLat = stepLat;
+  else if (dir === 'down') aLat = -stepLat;
+  else if (dir === 'left') aLng = -stepLng;
+  else if (dir === 'right') aLng = stepLng;
+  for (const k of ['tl','tr','bl']) { o.corners[k] = [o.corners[k][0] + aLat, o.corners[k][1] + aLng]; }
+  o.bounds = _boundsFromCorners(o.corners);
+  _ovlApply(o);
+}
+function rotateOverlay(id, deg) {
+  const o = S.overlays.find(x => x.id === id);
+  if (!o || !o.corners) return;
+  const c = o.corners;
+  const cLat = (c.tl[0] + c.tr[0] + c.bl[0]) / 3;
+  const cLng = (c.tl[1] + c.tr[1] + c.bl[1]) / 3;
+  const rad = deg * Math.PI / 180;
+  const cosr = Math.cos(rad), sinr = Math.sin(rad);
+  const kx = Math.cos(cLat * Math.PI / 180) || 1;
+  const rot = (p) => {
+    const dx = (p[1] - cLng) * kx, dy = (p[0] - cLat);
+    return [ cLat + (dx * sinr + dy * cosr), cLng + (dx * cosr - dy * sinr) / kx ];
+  };
+  for (const k of ['tl','tr','bl']) o.corners[k] = rot(o.corners[k]);
+  o.bounds = _boundsFromCorners(o.corners);
+  _ovlApply(o);
+}
+function scaleOverlay(id, f) {
+  const o = S.overlays.find(x => x.id === id);
+  if (!o || !o.corners) return;
+  const c = o.corners;
+  const cLat = (c.tl[0] + c.tr[0] + c.bl[0]) / 3;
+  const cLng = (c.tl[1] + c.tr[1] + c.bl[1]) / 3;
+  for (const k of ['tl','tr','bl'])
+    o.corners[k] = [ cLat + (o.corners[k][0] - cLat) * f, cLng + (o.corners[k][1] - cLng) * f ];
+  o.bounds = _boundsFromCorners(o.corners);
+  _ovlApply(o);
+}
+function _boundsFromCorners(c) {
+  // tr no almacenado el 4º vértice; estimamos con tl+tr+bl
+  const lats = [c.tl[0], c.tr[0], c.bl[0], c.tr[0] + (c.bl[0] - c.tl[0])];
+  const lngs = [c.tl[1], c.tr[1], c.bl[1], c.bl[1] + (c.tr[1] - c.tl[1])];
+  return [[Math.min(...lats), Math.min(...lngs)], [Math.max(...lats), Math.max(...lngs)]];
+}
+function deleteOverlay(id) {
+  const i = S.overlays.findIndex(x => x.id === id);
+  if (i < 0) return;
+  const o = S.overlays[i];
+  if (!confirm('¿Borrar la superposición "' + (o.name || '') + '"?')) return;
+  try { if (o.imageUrl && o.imageUrl.startsWith('blob:')) URL.revokeObjectURL(o.imageUrl); } catch(_) {}
+  S.overlays.splice(i, 1);
+  if (S.adjustOverlayId === id) S.adjustOverlayId = null;
+  renderOverlays();
+  saveState();
 }
 
 function updateClearImportsButton() {
